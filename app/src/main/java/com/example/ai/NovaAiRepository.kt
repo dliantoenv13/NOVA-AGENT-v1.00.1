@@ -1,9 +1,12 @@
 package com.example.ai
 
+import android.content.Context
 import android.util.Log
 import com.example.data.ChatRepository
 import com.example.data.local.ChatMessageEntity
 import com.google.firebase.Firebase
+import com.google.firebase.FirebaseApp
+import com.google.firebase.FirebaseOptions
 import com.google.firebase.ai.ai
 import com.google.firebase.ai.type.Content
 import com.google.firebase.ai.type.content
@@ -21,9 +24,10 @@ sealed interface AiStreamChunk {
     data class Completed(val finalText: String) : AiStreamChunk
 }
 
-class NovaAiRepository {
+class NovaAiRepository(private val context: Context) {
 
     private val chatModel by lazy {
+        ensureFirebaseInitialized()
         Firebase.ai.generativeModel(
             modelName = "gemini-3.8-flash",
             generationConfig = generationConfig {
@@ -45,6 +49,7 @@ class NovaAiRepository {
     }
 
     private val voiceModel by lazy {
+        ensureFirebaseInitialized()
         Firebase.ai.generativeModel(
             modelName = "gemini-3.8-flash",
             generationConfig = generationConfig {
@@ -63,10 +68,23 @@ class NovaAiRepository {
         )
     }
 
+    private fun ensureFirebaseInitialized() {
+        if (FirebaseApp.getApps(context).isNotEmpty()) return
+        val options = FirebaseOptions.fromResource(context)
+        if (options != null) {
+            FirebaseApp.initializeApp(context, options)
+        } else {
+            throw IllegalStateException(
+                "Konfigurasi Firebase (app/google-services.json) belum ikut terbawa saat APK dibuild di GitHub. Pastikan file app/google-services.json atau GitHub Secret GOOGLE_SERVICES_JSON tersedia lalu build ulang."
+            )
+        }
+    }
+
     fun streamChatReply(
         history: List<ChatMessageEntity>,
         userPrompt: String
     ): Flow<AiStreamChunk> = flow {
+        ensureFirebaseInitialized()
         val contents = buildContents(history, userPrompt)
         val accumulated = StringBuilder()
         withTimeout(60_000L) {
@@ -90,6 +108,7 @@ class NovaAiRepository {
         userPrompt: String
     ): String {
         return try {
+            ensureFirebaseInitialized()
             val contents = buildContents(history, userPrompt)
             val response = withTimeout(45_000L) {
                 voiceModel.generateContent(contents)

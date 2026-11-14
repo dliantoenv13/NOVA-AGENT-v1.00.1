@@ -5,6 +5,7 @@ import android.content.Intent
 import android.util.Log
 import com.example.BuildConfig
 import com.google.firebase.FirebaseApp
+import com.google.firebase.FirebaseOptions
 import com.google.firebase.appcheck.FirebaseAppCheck
 import com.google.firebase.appcheck.debug.DebugAppCheckProviderFactory
 import com.google.firebase.appcheck.recaptcha.RecaptchaAppCheckProviderFactory
@@ -16,10 +17,26 @@ private const val DEBUG_STORE_PREFIX = "com.google.firebase.appcheck.debug.store
 private const val DEBUG_SECRET_KEY = "com.google.firebase.appcheck.debug.DEBUG_SECRET"
 private const val RECAPTCHA_SITE_KEY_RES = "recaptcha_site_key"
 
+fun isFirebaseConfigured(context: Context): Boolean {
+    return try {
+        FirebaseApp.getApps(context).isNotEmpty() || FirebaseOptions.fromResource(context) != null
+    } catch (_: Exception) {
+        false
+    }
+}
+
 fun configureAppCheck(context: Context, intent: Intent?) {
     try {
         if (FirebaseApp.getApps(context).isEmpty()) {
-            FirebaseApp.initializeApp(context)
+            val options = FirebaseOptions.fromResource(context)
+            if (options == null) {
+                Log.e(
+                    TAG,
+                    "FirebaseOptions.fromResource(context) is null. Pastikan app/google-services.json tersedia saat build."
+                )
+                return
+            }
+            FirebaseApp.initializeApp(context, options)
         }
 
         if (BuildConfig.DEBUG) {

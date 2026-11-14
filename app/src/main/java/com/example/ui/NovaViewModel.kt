@@ -8,13 +8,14 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.NovaAppContainer
 import com.example.ai.AiStreamChunk
+import com.example.ai.isFirebaseConfigured
 import com.example.data.NovaSettings
 import com.example.data.local.ChatMessageEntity
 import com.example.data.local.ChatSessionEntity
 import com.example.overlay.NovaFloatingCapsuleService
 import com.example.overlay.NovaPermissionState
-import com.example.voice.NovaSpeechManager
 import com.example.voice.SpeechMode
+import com.example.voice.WakeWordMatcher
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
@@ -47,7 +48,7 @@ class NovaViewModel(
     private val container: NovaAppContainer
 ) : AndroidViewModel(application) {
 
-    private val speechManager = NovaSpeechManager(application.applicationContext)
+    private val speechManager = container.speechManager
 
     val settings: StateFlow<NovaSettings> = container.settingsRepository.settings
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), NovaSettings())
@@ -116,6 +117,9 @@ class NovaViewModel(
 
     fun updateComposerText(text: String) {
         _composerText.value = text
+        if (_assistantStatus.value is AssistantStatus.Error) {
+            _assistantStatus.value = AssistantStatus.Idle
+        }
     }
 
     fun openPermissionsSheet() {
@@ -164,7 +168,13 @@ class NovaViewModel(
                 _assistantStatus.value = AssistantStatus.Listening(partial)
             },
             onResult = { transcript ->
-                submitPrompt(prompt = transcript, isVoiceMessage = true)
+                val wake = WakeWordMatcher.match(transcript)
+                val finalPrompt = if (wake.matched && wake.commandAfterWakeWord.isNotBlank()) {
+                    wake.commandAfterWakeWord
+                } else {
+                    transcript
+                }
+                submitPrompt(prompt = finalPrompt, isVoiceMessage = true)
             },
             onError = { errorMsg ->
                 _assistantStatus.value = AssistantStatus.Error(errorMsg)
@@ -275,6 +285,12 @@ class NovaViewModel(
         container.ttsManager.stop()
 
         activeGenerationJob = viewModelScope.launch {
+            if (!isFirebaseConfigured(getApplication())) {
+                val msg = "Konfigurasi Firebase (app/google-services.json) belum terbawa pada APK hasil build ini. Tambahkan app/google-services.json atau GitHub Secret GOOGLE_SERVICES_JSON lalu build ulang."
+                _assistantStatus.value = AssistantStatus.Error(msg)
+                return@launch
+            }
+
             _assistantStatus.value = AssistantStatus.Thinking
             val sessionId = _activeSessionId.value
                 ?: container.chatRepository.getOrCreateDefaultSession(settings.value.activeSessionId)
@@ -341,7 +357,9 @@ class NovaViewModel(
     }
 
     override fun onCleared() {
-        speechManager.destroy()
+        if (speechManager.mode.value == SpeechMode.ActiveCommand) {
+            speechManager.stopListening()
+        }
         super.onCleared()
     }
 

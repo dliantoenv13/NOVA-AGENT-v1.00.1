@@ -14,17 +14,16 @@ class NovaHomeDetectorService : AccessibilityService() {
         super.onServiceConnected()
         monitor.refreshLauncherPackages()
         monitor.setAccessibilityConnected(true)
-        val initialPkg = rootInActiveWindow?.packageName?.toString()
-        if (initialPkg != null) {
-            monitor.onForegroundPackageChanged(initialPkg)
-        }
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
         if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
             val pkg = event.packageName?.toString() ?: return
-            monitor.onForegroundPackageChanged(pkg)
+            monitor.onForegroundPackageChanged(
+                packageName = pkg,
+                isFullScreen = event.isFullScreen
+            )
         }
     }
 

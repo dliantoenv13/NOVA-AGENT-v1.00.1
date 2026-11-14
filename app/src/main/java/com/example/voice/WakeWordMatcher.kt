@@ -7,9 +7,10 @@ data class WakeMatchResult(
 
 object WakeWordMatcher {
 
-    // Matches "Hi Nova" and common Indonesian STT phonetic spellings ("hai nova", "hay nova", "hye nova", "hai nofa")
+    // Matches "Hi Nova" and common Indonesian/English STT phonetic transcriptions
+    // ("hai nova", "hi nova", "hay nova", "hye nova", "hey nova", "ai nova", "hai nofa")
     private val WAKE_REGEX = Regex(
-        pattern = """\b(?:hi|hai|hay|hye)[,\s]+no[fv]a\b[,.:!?\s]*(.*)""",
+        pattern = """\b(?:hi|hai|hay|hye|hey|ai)[,\s]+no[fv]a\b[,.:!?\s]*(.*)""",
         option = RegexOption.IGNORE_CASE
     )
 

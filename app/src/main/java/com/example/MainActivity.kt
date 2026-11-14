@@ -65,8 +65,15 @@ class MainActivity : ComponentActivity() {
             val lifecycleOwner = LocalLifecycleOwner.current
             DisposableEffect(lifecycleOwner) {
                 val observer = LifecycleEventObserver { _, event ->
-                    if (event == Lifecycle.Event.ON_RESUME) {
-                        viewModel.refreshPermissionsAndSyncService()
+                    when (event) {
+                        Lifecycle.Event.ON_RESUME -> {
+                            appContainer.homeVisibilityMonitor.setAppInForeground(true)
+                            viewModel.refreshPermissionsAndSyncService()
+                        }
+                        Lifecycle.Event.ON_PAUSE -> {
+                            appContainer.homeVisibilityMonitor.setAppInForeground(false)
+                        }
+                        else -> Unit
                     }
                 }
                 lifecycleOwner.lifecycle.addObserver(observer)
@@ -107,5 +114,11 @@ class MainActivity : ComponentActivity() {
                 )
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        configureAppCheck(this, intent)
     }
 }

@@ -41,10 +41,20 @@ class HomeVisibilityMonitor(private val context: Context) {
     val permissionState: StateFlow<NovaPermissionState> = _permissionState.asStateFlow()
 
     @Volatile
+    private var isAppInForeground: Boolean = false
+
+    @Volatile
     private var launcherPackages: Set<String> = resolveLauncherPackages()
 
     @Volatile
     private var imePackages: Set<String> = resolveImePackages()
+
+    fun setAppInForeground(inForeground: Boolean) {
+        isAppInForeground = inForeground
+        if (inForeground) {
+            _isOnHomeScreen.value = false
+        }
+    }
 
     fun refreshLauncherPackages() {
         launcherPackages = resolveLauncherPackages()
@@ -65,13 +75,18 @@ class HomeVisibilityMonitor(private val context: Context) {
         refreshPermissions()
     }
 
-    fun onForegroundPackageChanged(packageName: String?) {
+    fun onForegroundPackageChanged(packageName: String?, isFullScreen: Boolean) {
         if (packageName.isNullOrBlank()) return
-        // Ignore software keyboard windows so they don't flicker home state
+
+        // Ignore software keyboards so search widgets on home screen don't flicker
         if (packageName in imePackages) return
 
-        _currentForegroundPackage.value = packageName
+        // If our own overlay emits a window event while MainActivity is NOT open, ignore it
+        if (packageName == context.packageName && !isAppInForeground) {
+            return
+        }
 
+        // Ignore transient non-fullscreen SystemUI overlays (toasts, status bar updates, volume panel)
         val keyguard = context.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
         val power = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
         val isUnlockedAndAwake = (keyguard?.isKeyguardLocked != true) && (power?.isInteractive != false)
@@ -81,9 +96,12 @@ class HomeVisibilityMonitor(private val context: Context) {
             return
         }
 
-        // Ignore our own overlay service window if it ever emits an event,
-        // EXCEPT MainActivity is part of context.packageName -> if MainActivity is active, hide popup!
-        val isHome = packageName in launcherPackages
+        if ((packageName == "com.android.systemui" || packageName == "android") && !isFullScreen) {
+            return
+        }
+
+        _currentForegroundPackage.value = packageName
+        val isHome = (packageName in launcherPackages) && !isAppInForeground
         _isOnHomeScreen.value = isHome
     }
 
@@ -132,11 +150,12 @@ class HomeVisibilityMonitor(private val context: Context) {
     private fun resolveLauncherPackages(): Set<String> {
         val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
         val pm = context.packageManager
+        val flags = PackageManager.MATCH_DEFAULT_ONLY or PackageManager.MATCH_ALL
         val resolved = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            pm.queryIntentActivities(intent, PackageManager.ResolveInfoFlags.of(PackageManager.MATCH_DEFAULT_ONLY.toLong()))
+            pm.queryIntentActivities(intent, PackageManager.ResolveInfoFlags.of(flags.toLong()))
         } else {
             @Suppress("DEPRECATION")
-            pm.queryIntentActivities(intent, PackageManager.MATCH_DEFAULT_ONLY)
+            pm.queryIntentActivities(intent, flags)
         }
         val defaultResolve = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             pm.resolveActivity(intent, PackageManager.ResolveInfoFlags.of(PackageManager.MATCH_DEFAULT_ONLY.toLong()))

@@ -74,7 +74,7 @@ fun PermissionsGuideSheet(
                 color = NovaBlack
             )
             Text(
-                text = "Agar popup kamera depan dan perintah suara \"Hi Nova\" berjalan permanen khusus di Home Screen (dan otomatis menghilang saat membuka aplikasi lain), aktifkan izin berikut:",
+                text = "Agar popup kamera depan dan perintah suara \"Hi Nova\" muncul otomatis saat Anda menekan Home (dan hilang saat membuka aplikasi lain), aktifkan izin berikut:",
                 style = MaterialTheme.typography.bodyMedium,
                 color = NovaSlate
             )
@@ -82,7 +82,7 @@ fun PermissionsGuideSheet(
             PermissionItemCard(
                 icon = Icons.Rounded.Mic,
                 title = "1. Izin Mikrofon",
-                description = "Dibutuhkan untuk obrolan suara, Tap to Talk, dan mengenali ucapan \"Hi Nova\".",
+                description = "Dibutuhkan untuk obrolan suara, Tap to Talk, dan mendeteksi ucapan \"Hi Nova\".",
                 isGranted = permissionState.hasRecordAudio,
                 buttonText = "Izinkan",
                 testTag = "perm_mic_button",
@@ -92,9 +92,9 @@ fun PermissionsGuideSheet(
             PermissionItemCard(
                 icon = Icons.Rounded.Layers,
                 title = "2. Tampil di Atas Aplikasi",
-                description = "Memungkinkan kapsul Nova mengambang di area kamera depan saat di Home Screen.",
+                description = "Menampilkan kapsul Nova mengambang di area kamera depan saat berada di Home Screen.",
                 isGranted = permissionState.hasOverlayPermission,
-                buttonText = "Buka Pengaturan",
+                buttonText = "Pengaturan",
                 testTag = "perm_overlay_button",
                 onAction = onOpenOverlaySettings
             )
@@ -102,9 +102,9 @@ fun PermissionsGuideSheet(
             PermissionItemCard(
                 icon = Icons.Rounded.AccessibilityNew,
                 title = "3. Deteksi Layar Utama (Aksesibilitas)",
-                description = "Mendeteksi kapan Anda di Home Screen agar popup & Hi Nova langsung mati saat membuka aplikasi lain.",
+                description = "Di Pengaturan Aksesibilitas -> Aplikasi yang Didownload, aktifkan \"Nova Deteksi Layar Utama\".",
                 isGranted = permissionState.hasAccessibilityEnabled,
-                buttonText = "Aktifkan Layanan",
+                buttonText = "Aktifkan",
                 testTag = "perm_accessibility_button",
                 onAction = onOpenAccessibilitySettings
             )
@@ -112,7 +112,7 @@ fun PermissionsGuideSheet(
             PermissionItemCard(
                 icon = Icons.Rounded.Notifications,
                 title = "4. Notifikasi Layanan",
-                description = "Menjaga layanan kapsul tetap stabil di latar belakang tanpa dimatikan sistem.",
+                description = "Menjaga layanan kapsul & pendengar suara tetap stabil di latar belakang.",
                 isGranted = permissionState.hasPostNotifications,
                 buttonText = "Izinkan",
                 testTag = "perm_notif_button",

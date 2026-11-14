@@ -38,7 +38,6 @@ import com.example.MainActivity
 import com.example.NovaApplication
 import com.example.R
 import com.example.data.NovaSettings
-import com.example.voice.NovaSpeechManager
 import com.example.voice.SpeechMode
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -47,10 +46,10 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 private const val TAG = "NovaCapsuleService"
@@ -62,6 +61,7 @@ sealed interface CapsuleVisualState {
     data object Listening : CapsuleVisualState
     data object Thinking : CapsuleVisualState
     data object Speaking : CapsuleVisualState
+    data class ErrorNotice(val shortLabel: String) : CapsuleVisualState
 }
 
 class NovaFloatingCapsuleService : Service() {
@@ -69,7 +69,7 @@ class NovaFloatingCapsuleService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     private val container by lazy { (application as NovaApplication).container }
-    private val speechManager by lazy { NovaSpeechManager(applicationContext) }
+    private val speechManager by lazy { container.speechManager }
 
     private var windowManager: WindowManager? = null
     private var capsuleRoot: LinearLayout? = null
@@ -205,14 +205,17 @@ class NovaFloatingCapsuleService : Service() {
                     ) {
                         startWakeWordStandby(settings.voiceLanguageTag)
                     } else if (!settings.isWakeWordEnabled &&
-                        speechManager.mode.value == SpeechMode.WakeWordStandby
+                        (speechManager.mode.value == SpeechMode.WakeWordVadStandby ||
+                            speechManager.mode.value == SpeechMode.WakeWordSpeechVerify)
                     ) {
                         speechManager.stopListening()
                     }
                 } else {
                     // Strictly hide popup & stop passive listening outside Home Screen
                     hideCapsuleView()
-                    if (speechManager.mode.value != SpeechMode.Stopped) {
+                    if (speechManager.mode.value == SpeechMode.WakeWordVadStandby ||
+                        speechManager.mode.value == SpeechMode.WakeWordSpeechVerify
+                    ) {
                         speechManager.stopListening()
                     }
                     if (!onHome && visualState.value == CapsuleVisualState.Listening) {
@@ -264,11 +267,7 @@ class NovaFloatingCapsuleService : Service() {
                 handleCapturedVoicePrompt(spokenText)
             },
             onError = { _ ->
-                visualState.value = CapsuleVisualState.Idle
-                animateCapsulePulse(expand = false)
-                if (currentlyOnHome && currentSettings.isWakeWordEnabled) {
-                    startWakeWordStandby(currentSettings.voiceLanguageTag)
-                }
+                showTransientErrorAndReset("Coba lagi")
             }
         )
     }
@@ -302,57 +301,53 @@ class NovaFloatingCapsuleService : Service() {
                 if (currentSettings.isTtsEnabled) {
                     container.ttsManager.speak(reply) {
                         serviceScope.launch {
-                            visualState.value = CapsuleVisualState.Idle
-                            animateCapsulePulse(expand = false)
-                            if (currentlyOnHome && currentSettings.isWakeWordEnabled) {
-                                startWakeWordStandby(currentSettings.voiceLanguageTag)
-                            }
+                            resetCapsuleToIdle()
                         }
                     }
                 } else {
-                    visualState.value = CapsuleVisualState.Idle
-                    animateCapsulePulse(expand = false)
-                    if (currentlyOnHome && currentSettings.isWakeWordEnabled) {
-                        startWakeWordStandby(currentSettings.voiceLanguageTag)
-                    }
+                    resetCapsuleToIdle()
                 }
             } catch (e: TimeoutCancellationException) {
                 val msg = "Koneksi ke Nova melebihi batas waktu."
                 container.chatRepository.updateNovaMessage(novaMsgId, msg, isError = true)
-                speakFallbackAndReset(msg)
+                speakFallbackOrReset("Koneksi timeout", msg)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 Log.e(TAG, "Background AI reply failed", e)
-                val msg = "Maaf, Nova gagal memproses permintaan saat ini."
-                container.chatRepository.updateNovaMessage(
-                    novaMsgId,
-                    e.localizedMessage ?: msg,
-                    isError = true
-                )
-                speakFallbackAndReset(msg)
+                val detail = e.localizedMessage ?: "Gagal terhubung ke Nova."
+                container.chatRepository.updateNovaMessage(novaMsgId, detail, isError = true)
+                speakFallbackOrReset("Firebase belum siap", "Maaf, Nova gagal memproses permintaan.")
             }
         }
     }
 
-    private fun speakFallbackAndReset(message: String) {
+    private fun speakFallbackOrReset(shortLabel: String, spokenMessage: String) {
         if (currentSettings.isTtsEnabled) {
-            visualState.value = CapsuleVisualState.Speaking
-            container.ttsManager.speak(message) {
+            visualState.value = CapsuleVisualState.ErrorNotice(shortLabel)
+            container.ttsManager.speak(spokenMessage) {
                 serviceScope.launch {
-                    visualState.value = CapsuleVisualState.Idle
-                    animateCapsulePulse(expand = false)
-                    if (currentlyOnHome && currentSettings.isWakeWordEnabled) {
-                        startWakeWordStandby(currentSettings.voiceLanguageTag)
-                    }
+                    resetCapsuleToIdle()
                 }
             }
         } else {
-            visualState.value = CapsuleVisualState.Idle
-            animateCapsulePulse(expand = false)
-            if (currentlyOnHome && currentSettings.isWakeWordEnabled) {
-                startWakeWordStandby(currentSettings.voiceLanguageTag)
-            }
+            showTransientErrorAndReset(shortLabel)
+        }
+    }
+
+    private fun showTransientErrorAndReset(shortLabel: String) {
+        serviceScope.launch {
+            visualState.value = CapsuleVisualState.ErrorNotice(shortLabel)
+            delay(2000L)
+            resetCapsuleToIdle()
+        }
+    }
+
+    private fun resetCapsuleToIdle() {
+        visualState.value = CapsuleVisualState.Idle
+        animateCapsulePulse(expand = false)
+        if (currentlyOnHome && currentSettings.isWakeWordEnabled) {
+            startWakeWordStandby(currentSettings.voiceLanguageTag)
         }
     }
 
@@ -380,8 +375,11 @@ class NovaFloatingCapsuleService : Service() {
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-            y = dp(6)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            y = dp(4)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                layoutInDisplayCutoutMode =
+                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                 layoutInDisplayCutoutMode =
                     WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
             }
@@ -436,8 +434,8 @@ class NovaFloatingCapsuleService : Service() {
             gravity = Gravity.CENTER_VERTICAL
             this.background = background
             elevation = dp(10).toFloat()
-            setPadding(dp(12), dp(7), dp(14), dp(7))
-            minimumHeight = dp(36)
+            setPadding(dp(14), dp(8), dp(14), dp(8))
+            minimumHeight = dp(38)
         }
 
         val icon = ImageView(this).apply {
@@ -456,7 +454,7 @@ class NovaFloatingCapsuleService : Service() {
             typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
-            maxWidth = dp(170)
+            maxWidth = dp(175)
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
@@ -537,29 +535,21 @@ class NovaFloatingCapsuleService : Service() {
 
                     val elapsed = System.currentTimeMillis() - pressStartTime
                     if (holdTriggered || elapsed >= 260L) {
-                        // Release after holding: finish capturing so SpeechRecognizer finalizes quickly
                         if (visualState.value == CapsuleVisualState.Listening) {
                             speechManager.stopListening()
-                            // SpeechRecognizer onResults will run automatically if audio arrived;
-                            // if cancelled before sound, return gracefully.
                         }
                     } else {
-                        // Single quick tap on capsule
                         when (visualState.value) {
                             CapsuleVisualState.Speaking -> {
                                 container.ttsManager.stop()
-                                visualState.value = CapsuleVisualState.Idle
-                                animateCapsulePulse(expand = false)
-                                if (currentlyOnHome && currentSettings.isWakeWordEnabled) {
-                                    startWakeWordStandby(currentSettings.voiceLanguageTag)
-                                }
+                                resetCapsuleToIdle()
                             }
                             CapsuleVisualState.Listening -> {
                                 speechManager.stopListening()
-                                visualState.value = CapsuleVisualState.Idle
-                                animateCapsulePulse(expand = false)
+                                resetCapsuleToIdle()
                             }
-                            CapsuleVisualState.Thinking -> Unit
+                            CapsuleVisualState.Thinking,
+                            is CapsuleVisualState.ErrorNotice -> Unit
                             CapsuleVisualState.Idle -> triggerCommandCapture()
                         }
                     }
@@ -596,6 +586,12 @@ class NovaFloatingCapsuleService : Service() {
                 statusDot?.visibility = View.GONE
                 waveBars.forEach { it.visibility = View.VISIBLE }
                 startWaveAnimation(speedMs = 280L)
+            }
+            is CapsuleVisualState.ErrorNotice -> {
+                capsuleLabel?.text = state.shortLabel
+                statusDot?.visibility = View.GONE
+                waveBars.forEach { it.visibility = View.GONE }
+                stopWaveAnimation()
             }
         }
     }
@@ -704,7 +700,11 @@ class NovaFloatingCapsuleService : Service() {
         } catch (_: Exception) {
         }
         activeVoiceJob?.cancel()
-        speechManager.destroy()
+        if (speechManager.mode.value == SpeechMode.WakeWordVadStandby ||
+            speechManager.mode.value == SpeechMode.WakeWordSpeechVerify
+        ) {
+            speechManager.stopListening()
+        }
         removeCapsuleView()
         serviceScope.cancel()
         super.onDestroy()

@@ -1,9 +1,13 @@
 package com.example.voice
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.AudioFormat
+import android.media.AudioRecord
+import android.media.MediaRecorder
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -12,22 +16,34 @@ import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.util.Log
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlin.math.sqrt
 
 private const val TAG = "NovaSpeechManager"
 
 sealed interface SpeechMode {
     data object Stopped : SpeechMode
-    data object WakeWordStandby : SpeechMode
+    data object WakeWordVadStandby : SpeechMode
+    data object WakeWordSpeechVerify : SpeechMode
     data object ActiveCommand : SpeechMode
 }
 
 class NovaSpeechManager(private val context: Context) {
 
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val vadScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     private var recognizer: SpeechRecognizer? = null
+    private var vadJob: Job? = null
 
     private val _mode = MutableStateFlow<SpeechMode>(SpeechMode.Stopped)
     val mode: StateFlow<SpeechMode> = _mode.asStateFlow()
@@ -55,23 +71,24 @@ class NovaSpeechManager(private val context: Context) {
         onResult: (String) -> Unit,
         onError: (String) -> Unit = {}
     ) {
+        stopVadOnly()
         mainHandler.post {
             if (!hasRecordPermission()) {
                 onError("Izin mikrofon belum diberikan.")
                 return@post
             }
             if (!isAvailable()) {
-                onError("Layanan pengenal suara tidak tersedia di perangkat ini.")
+                onError("Layanan pengenal suara (Google Speech) tidak tersedia di perangkat ini.")
                 return@post
             }
-            cancelScheduledRestart()
+            cancelMainCallbacks()
             currentLanguageTag = languageTag
             onPartialText = onPartial
             onCommandCaptured = onResult
             onWakeWordDetected = null
             onSpeechError = onError
             _mode.value = SpeechMode.ActiveCommand
-            startInternal(preferOffline = false)
+            startSpeechRecognizerInternal()
         }
     }
 
@@ -80,29 +97,34 @@ class NovaSpeechManager(private val context: Context) {
         onWakeWord: (commandAfterWake: String) -> Unit,
         onError: (String) -> Unit = {}
     ) {
+        if (!hasRecordPermission() || !isAvailable()) {
+            _mode.value = SpeechMode.Stopped
+            return
+        }
+        currentLanguageTag = languageTag
+        onWakeWordDetected = onWakeWord
+        onCommandCaptured = null
+        onPartialText = null
+        onSpeechError = onError
+
+        if (_mode.value == SpeechMode.WakeWordVadStandby ||
+            _mode.value == SpeechMode.WakeWordSpeechVerify
+        ) {
+            return
+        }
+
         mainHandler.post {
-            if (!hasRecordPermission() || !isAvailable()) {
-                _mode.value = SpeechMode.Stopped
-                return@post
-            }
-            if (_mode.value == SpeechMode.WakeWordStandby) {
-                onWakeWordDetected = onWakeWord
-                return@post
-            }
-            cancelScheduledRestart()
-            currentLanguageTag = languageTag
-            onWakeWordDetected = onWakeWord
-            onCommandCaptured = null
-            onPartialText = null
-            onSpeechError = onError
-            _mode.value = SpeechMode.WakeWordStandby
-            startInternal(preferOffline = false)
+            cancelMainCallbacks()
+            destroyRecognizerOnMain()
+            _mode.value = SpeechMode.WakeWordVadStandby
+            startVadLoop()
         }
     }
 
     fun stopListening() {
+        stopVadOnly()
         mainHandler.post {
-            cancelScheduledRestart()
+            cancelMainCallbacks()
             _mode.value = SpeechMode.Stopped
             _audioLevel.value = 0f
             try {
@@ -115,22 +137,128 @@ class NovaSpeechManager(private val context: Context) {
     }
 
     fun destroy() {
+        stopVadOnly()
         mainHandler.post {
-            cancelScheduledRestart()
+            cancelMainCallbacks()
             _mode.value = SpeechMode.Stopped
             _audioLevel.value = 0f
-            try {
-                recognizer?.destroy()
-            } catch (e: Exception) {
-                Log.w(TAG, "Error destroying recognizer", e)
-            }
-            recognizer = null
+            destroyRecognizerOnMain()
         }
     }
 
-    private fun startInternal(preferOffline: Boolean) {
+    private fun stopVadOnly() {
+        vadJob?.cancel()
+        vadJob = null
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startVadLoop() {
+        stopVadOnly()
+        vadJob = vadScope.launch {
+            val sampleRate = 16000
+            val minBuffer = AudioRecord.getMinBufferSize(
+                sampleRate,
+                AudioFormat.CHANNEL_IN_MONO,
+                AudioFormat.ENCODING_PCM_16BIT
+            )
+            if (minBuffer <= 0) {
+                // Fallback to direct SpeechRecognizer if AudioRecord unavailable
+                mainHandler.post {
+                    if (_mode.value == SpeechMode.WakeWordVadStandby) {
+                        _mode.value = SpeechMode.WakeWordSpeechVerify
+                        startSpeechRecognizerInternal()
+                    }
+                }
+                return@launch
+            }
+
+            val bufferSize = (minBuffer * 2).coerceAtLeast(2048)
+            var audioRecord: AudioRecord? = null
+            try {
+                audioRecord = AudioRecord(
+                    MediaRecorder.AudioSource.VOICE_RECOGNITION,
+                    sampleRate,
+                    AudioFormat.CHANNEL_IN_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT,
+                    bufferSize
+                )
+                if (audioRecord.state != AudioRecord.STATE_INITIALIZED) {
+                    audioRecord.release()
+                    audioRecord = AudioRecord(
+                        MediaRecorder.AudioSource.MIC,
+                        sampleRate,
+                        AudioFormat.CHANNEL_IN_MONO,
+                        AudioFormat.ENCODING_PCM_16BIT,
+                        bufferSize
+                    )
+                }
+
+                if (audioRecord.state != AudioRecord.STATE_INITIALIZED) {
+                    audioRecord.release()
+                    mainHandler.post {
+                        if (_mode.value == SpeechMode.WakeWordVadStandby) {
+                            _mode.value = SpeechMode.WakeWordSpeechVerify
+                            startSpeechRecognizerInternal()
+                        }
+                    }
+                    return@launch
+                }
+
+                val samples = ShortArray(1024)
+                audioRecord.startRecording()
+                var hotFrames = 0
+
+                while (isActive && _mode.value == SpeechMode.WakeWordVadStandby) {
+                    val read = audioRecord.read(samples, 0, samples.size)
+                    if (read > 0) {
+                        var sumSq = 0.0
+                        for (i in 0 until read) {
+                            val s = samples[i].toDouble()
+                            sumSq += s * s
+                        }
+                        val rms = sqrt(sumSq / read)
+                        _audioLevel.value = ((rms - 250.0) / 3000.0).toFloat().coerceIn(0f, 1f)
+
+                        if (rms > 850.0) {
+                            hotFrames++
+                            if (hotFrames >= 2) {
+                                // Speech energy detected -> release AudioRecord & verify "Hi Nova" via SpeechRecognizer
+                                break
+                            }
+                        } else {
+                            hotFrames = (hotFrames - 1).coerceAtLeast(0)
+                        }
+                    } else {
+                        delay(40)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "AudioRecord VAD error, falling back", e)
+            } finally {
+                try {
+                    audioRecord?.stop()
+                } catch (_: Exception) {
+                }
+                try {
+                    audioRecord?.release()
+                } catch (_: Exception) {
+                }
+            }
+
+            if (isActive && _mode.value == SpeechMode.WakeWordVadStandby) {
+                mainHandler.post {
+                    if (_mode.value == SpeechMode.WakeWordVadStandby) {
+                        _mode.value = SpeechMode.WakeWordSpeechVerify
+                        startSpeechRecognizerInternal()
+                    }
+                }
+            }
+        }
+    }
+
+    private fun startSpeechRecognizerInternal() {
         try {
-            recognizer?.destroy()
+            destroyRecognizerOnMain()
             recognizer = SpeechRecognizer.createSpeechRecognizer(context.applicationContext).apply {
                 setRecognitionListener(createListener())
             }
@@ -141,10 +269,7 @@ class NovaSpeechManager(private val context: Context) {
                 )
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE, currentLanguageTag)
                 putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-                putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
-                if (preferOffline) {
-                    putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
-                }
+                putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 4)
             }
             recognizer?.startListening(intent)
         } catch (e: Exception) {
@@ -153,13 +278,23 @@ class NovaSpeechManager(private val context: Context) {
             _mode.value = SpeechMode.Stopped
             if (prevMode == SpeechMode.ActiveCommand) {
                 onSpeechError?.invoke("Gagal memulai mikrofon: ${e.localizedMessage ?: "error"}")
+            } else if (prevMode == SpeechMode.WakeWordSpeechVerify) {
+                scheduleReturnToVad(1200L)
             }
         }
     }
 
+    private fun destroyRecognizerOnMain() {
+        try {
+            recognizer?.destroy()
+        } catch (_: Exception) {
+        }
+        recognizer = null
+    }
+
     private fun createListener(): RecognitionListener = object : RecognitionListener {
         override fun onReadyForSpeech(params: Bundle?) {
-            _audioLevel.value = 0.1f
+            _audioLevel.value = 0.12f
         }
 
         override fun onBeginningOfSpeech() {
@@ -167,8 +302,7 @@ class NovaSpeechManager(private val context: Context) {
         }
 
         override fun onRmsChanged(rmsdB: Float) {
-            val normalized = ((rmsdB + 2f) / 12f).coerceIn(0.05f, 1f)
-            _audioLevel.value = normalized
+            _audioLevel.value = ((rmsdB + 2f) / 12f).coerceIn(0.05f, 1f)
         }
 
         override fun onBufferReceived(buffer: ByteArray?) = Unit
@@ -179,33 +313,34 @@ class NovaSpeechManager(private val context: Context) {
 
         override fun onError(error: Int) {
             _audioLevel.value = 0f
-            val currentMode = _mode.value
-            if (currentMode == SpeechMode.WakeWordStandby) {
-                val delayMs = when (error) {
-                    SpeechRecognizer.ERROR_NO_MATCH,
-                    SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> 350L
-                    SpeechRecognizer.ERROR_RECOGNIZER_BUSY,
-                    SpeechRecognizer.ERROR_CLIENT -> 1200L
-                    SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> {
+            when (_mode.value) {
+                SpeechMode.WakeWordSpeechVerify -> {
+                    if (error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) {
                         _mode.value = SpeechMode.Stopped
                         onSpeechError?.invoke("Izin mikrofon dibutuhkan untuk Hi Nova.")
-                        return
+                    } else {
+                        val cooldown = if (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY ||
+                            error == SpeechRecognizer.ERROR_CLIENT
+                        ) 1200L else 450L
+                        scheduleReturnToVad(cooldown)
                     }
-                    else -> 900L
                 }
-                scheduleStandbyRestart(delayMs)
-            } else if (currentMode == SpeechMode.ActiveCommand) {
-                _mode.value = SpeechMode.Stopped
-                val message = when (error) {
-                    SpeechRecognizer.ERROR_NO_MATCH,
-                    SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "Suara tidak terdengar. Coba ucapkan lagi."
-                    SpeechRecognizer.ERROR_NETWORK,
-                    SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "Koneksi internet dibutuhkan untuk mengenali suara."
-                    SpeechRecognizer.ERROR_AUDIO -> "Gagal membaca audio mikrofon."
-                    SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Izin mikrofon belum diaktifkan."
-                    else -> "Pengenalan suara terhenti (kode $error)."
+
+                SpeechMode.ActiveCommand -> {
+                    _mode.value = SpeechMode.Stopped
+                    val message = when (error) {
+                        SpeechRecognizer.ERROR_NO_MATCH,
+                        SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "Suara tidak terdengar. Coba ucapkan lagi."
+                        SpeechRecognizer.ERROR_NETWORK,
+                        SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "Koneksi internet dibutuhkan untuk mengenali suara."
+                        SpeechRecognizer.ERROR_AUDIO -> "Gagal membaca audio mikrofon."
+                        SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Izin mikrofon belum diaktifkan."
+                        else -> "Pengenalan suara terhenti (kode $error)."
+                    }
+                    onSpeechError?.invoke(message)
                 }
-                onSpeechError?.invoke(message)
+
+                else -> Unit
             }
         }
 
@@ -226,7 +361,7 @@ class NovaSpeechManager(private val context: Context) {
                     }
                 }
 
-                SpeechMode.WakeWordStandby -> {
+                SpeechMode.WakeWordSpeechVerify -> {
                     val matchedWake = matches
                         .asSequence()
                         .map { WakeWordMatcher.match(it) }
@@ -236,11 +371,11 @@ class NovaSpeechManager(private val context: Context) {
                         _mode.value = SpeechMode.Stopped
                         onWakeWordDetected?.invoke(matchedWake.commandAfterWakeWord)
                     } else {
-                        scheduleStandbyRestart(300L)
+                        scheduleReturnToVad(350L)
                     }
                 }
 
-                SpeechMode.Stopped -> Unit
+                else -> Unit
             }
         }
 
@@ -252,34 +387,28 @@ class NovaSpeechManager(private val context: Context) {
                 .orEmpty()
             if (partial.isEmpty()) return
 
-            when (_mode.value) {
-                SpeechMode.ActiveCommand -> onPartialText?.invoke(partial)
-                SpeechMode.WakeWordStandby -> {
-                    val wake = WakeWordMatcher.match(partial)
-                    if (wake.matched && wake.commandAfterWakeWord.isEmpty()) {
-                        // Wait briefly for final utterance so full command after "Hi Nova" can be captured
-                        Log.d(TAG, "Partial wake word detected: $partial")
-                    }
-                }
-                SpeechMode.Stopped -> Unit
+            if (_mode.value == SpeechMode.ActiveCommand) {
+                onPartialText?.invoke(partial)
             }
         }
 
         override fun onEvent(eventType: Int, params: Bundle?) = Unit
     }
 
-    private fun scheduleStandbyRestart(delayMs: Long) {
-        if (isRestartScheduled || _mode.value != SpeechMode.WakeWordStandby) return
+    private fun scheduleReturnToVad(delayMs: Long) {
+        if (isRestartScheduled) return
         isRestartScheduled = true
         mainHandler.postDelayed({
             isRestartScheduled = false
-            if (_mode.value == SpeechMode.WakeWordStandby) {
-                startInternal(preferOffline = false)
+            if (_mode.value == SpeechMode.WakeWordSpeechVerify && hasRecordPermission()) {
+                destroyRecognizerOnMain()
+                _mode.value = SpeechMode.WakeWordVadStandby
+                startVadLoop()
             }
         }, delayMs)
     }
 
-    private fun cancelScheduledRestart() {
+    private fun cancelMainCallbacks() {
         isRestartScheduled = false
         mainHandler.removeCallbacksAndMessages(null)
     }
