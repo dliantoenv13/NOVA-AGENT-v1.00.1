@@ -20,7 +20,7 @@
     <string name="status_home_active">Aktif di Home</string>
 
     <string name="input_placeholder">Ketik pesan atau bicara ke Nova…</string>
-    <string name="orb_hint_title">Sentuh bola untuk memecah partikel atom</string>
+    <string name="orb_hint_title">Sentuh lingkaran partikel untuk berubah bentuk</string>
     <string name="orb_hint_subtitle">Ucapkan \"Hi Nova\" atau tahan Tap to Talk saat di Home Screen</string>
 
     <string name="capsule_tap_to_talk">Tap to Talk</string>
