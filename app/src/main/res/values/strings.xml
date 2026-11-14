@@ -1,0 +1,49 @@
+<resources>
+    <string name="app_name">Nova</string>
+    <string name="accessibility_service_label">Nova Deteksi Layar Utama</string>
+    <string name="accessibility_service_description">Mendeteksi apakah Anda sedang berada di Layar Utama (Home Screen) agar kapsul suara Nova hanya muncul dan aktif di Home Screen, serta otomatis tersembunyi saat membuka aplikasi lain. Nova tidak membaca isi layar atau data pribadi Anda.</string>
+
+    <string name="nova_title">Nova</string>
+    <string name="menu_button_desc">Buka menu fitur dan riwayat</string>
+    <string name="new_chat_desc">Percakapan baru</string>
+    <string name="send_message_desc">Kirim pesan</string>
+    <string name="record_voice_desc">Rekam suara untuk bicara dengan Nova</string>
+    <string name="stop_voice_desc">Hentikan rekaman suara</string>
+    <string name="stop_speaking_desc">Hentikan suara Nova</string>
+    <string name="speak_reply_desc">Bacakan jawaban</string>
+    <string name="copy_reply_desc">Salin jawaban</string>
+
+    <string name="status_ready">Siap</string>
+    <string name="status_listening">Mendengarkan…</string>
+    <string name="status_thinking">Berpikir…</string>
+    <string name="status_speaking">Berbicara</string>
+    <string name="status_home_active">Aktif di Home</string>
+
+    <string name="input_placeholder">Ketik pesan atau bicara ke Nova…</string>
+    <string name="orb_hint_title">Sentuh bola untuk memecah partikel atom</string>
+    <string name="orb_hint_subtitle">Ucapkan \"Hi Nova\" atau tahan Tap to Talk saat di Home Screen</string>
+
+    <string name="capsule_tap_to_talk">Tap to Talk</string>
+    <string name="capsule_listening">Mendengarkan…</string>
+    <string name="capsule_thinking">Memproses…</string>
+    <string name="capsule_speaking">Nova menjawab…</string>
+
+    <string name="notification_channel_name">Kapsul Nova Home Screen</string>
+    <string name="notification_channel_desc">Menjaga kapsul kamera depan dan deteksi suara Hi Nova aktif saat di Home Screen</string>
+    <string name="notification_title">Nova aktif di Layar Utama</string>
+    <string name="notification_text_wakeword">Ucapkan \"Hi Nova\" atau tahan Tap to Talk di Home Screen</string>
+    <string name="notification_text_paused">Bersembunyi otomatis saat aplikasi lain terbuka</string>
+    <string name="notification_action_stop">Nonaktifkan</string>
+
+    <string name="drawer_header_subtitle">Asisten AI Monokrom • Lokal &amp; Cepat</string>
+    <string name="drawer_new_chat">Percakapan Baru</string>
+    <string name="drawer_section_capsule">Kapsul &amp; Suara</string>
+    <string name="drawer_toggle_capsule">Kapsul Kamera Depan (Home Screen)</string>
+    <string name="drawer_toggle_wakeword">Deteksi Suara \"Hi Nova\"</string>
+    <string name="drawer_toggle_tts">Jawaban Suara Latar Belakang</string>
+    <string name="drawer_toggle_low_end">Mode Hemat HP Kentang</string>
+    <string name="drawer_section_permissions">Izin &amp; Layanan Sistem</string>
+    <string name="drawer_open_permissions">Kelola Izin Kapsul</string>
+    <string name="drawer_section_history">Riwayat Percakapan</string>
+    <string name="drawer_empty_history">Belum ada percakapan tersimpan.</string>
+</resources>

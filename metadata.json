@@ -1,0 +1,6 @@
+{
+  "name": "Nova",
+  "description": "Asisten AI suara monokrom modern dengan bola partikel atom interaktif dan kapsul suara mengambang khusus Home Screen.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
